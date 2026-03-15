@@ -4,6 +4,8 @@ from google import genai
 from dotenv import load_dotenv
 import os
 import json
+import asyncio
+import base64
 
 load_dotenv()
 
@@ -18,6 +20,25 @@ app.add_middleware(
 
 client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
+async def generate_image(description: str, style_notes: str) -> str:
+    prompt = f"{description}. Style: {style_notes}. Cinematic, high quality, film still."
+    
+    response = await asyncio.to_thread(
+        client.models.generate_images,
+        model="imagen-4.0-generate-001",
+        prompt=prompt,
+        config={"number_of_images": 1}
+    )
+    
+    # Return the image as a base64 string
+    image_bytes = response.generated_images[0].image.image_bytes
+    return f"data:image/png;base64,{base64.b64encode(image_bytes).decode()}"
+
+@app.get("/models")
+async def list_models():
+    models = client.models.list()
+    return {"models": [m.name for m in models]}
+
 @app.post("/generate")
 async def generate(audio: UploadFile = File(...)):
     # Read the audio bytes
@@ -31,7 +52,7 @@ async def generate(audio: UploadFile = File(...)):
                 "parts": [
                     {
                         "inline_data": {
-                            "mime_type": "audio/webm",
+                            "mime_type": "audio/mp4",
                             "data": audio_bytes
                         }
                     },
@@ -58,17 +79,23 @@ async def generate(audio: UploadFile = File(...)):
         ]
     )
 
-    # Parse the text response as JSON
+    # Parse Gemini response
     raw = response.text.strip()
-    # Strip markdown code fences if present
     if raw.startswith("```"):
         raw = raw.split("```")[1]
         if raw.startswith("json"):
             raw = raw[4:]
     result = json.loads(raw.strip())
-    return result
 
-@app.get("/models")
-async def list_models():
-    models = client.models.list()
-    return {"models": [m.name for m in models]}
+    # Generate images for all scenes in parallel
+    image_tasks = [
+        generate_image(scene["description"], scene["style_notes"])
+        for scene in result["scenes"]
+    ]
+    image_urls = await asyncio.gather(*image_tasks)
+
+    # Add image URLs to each scene
+    for i, scene in enumerate(result["scenes"]):
+        scene["image_url"] = image_urls[i]
+
+    return result
