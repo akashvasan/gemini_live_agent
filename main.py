@@ -1,4 +1,4 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -34,79 +34,67 @@ async def generate_image(description: str, style_notes: str) -> str:
         config={"number_of_images": 1}
     )
     
-    # Return the image as a base64 string
     image_bytes = response.generated_images[0].image.image_bytes
     return f"data:image/png;base64,{base64.b64encode(image_bytes).decode()}"
 
-@app.get("/models")
-async def list_models():
-    models = client.models.list()
-    return {"models": [m.name for m in models]}
 
-@app.post("/generate")
-async def generate(audio: UploadFile = File(...)):
-    # Read the audio bytes
-    audio_bytes = await audio.read()
+async def generate_video_clip(scene: dict, index: int, duration: int = 5) -> dict:
+    prompt = scene.get("image_prompt", scene.get("narration", ""))
+    if not prompt:
+        return {"scene_index": index, "video_url": None}
+    
+    try:
+        operation = client.models.generate_videos(
+            model="veo-3.0-fast-generate-001",
+            prompt=prompt,
+            config=types.GenerateVideosConfig(
+                aspect_ratio="16:9",
+                number_of_videos=1,
+            )
+        )
 
-    # Send to Gemini with your prompt
-    response = client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=[
-            {
-                "parts": [
-                    {
-                        "inline_data": {
-                            "mime_type": "audio/mp4",
-                            "data": audio_bytes
-                        }
-                    },
-                    {
-                        "text": """You are a film director's assistant. The user has described a scene or short film idea out loud.
-                        Based on their description, generate a storyboard broken into 4-6 scenes.
-                        
-                        Respond ONLY with a JSON object in this exact format, no extra text, no markdown:
-                        {
-                            "scenes": [
-                                {
-                                    "scene_number": 1,
-                                    "title": "...",
-                                    "shot_type": "wide | medium | close-up | extreme close-up",
-                                    "description": "visual description for image generation",
-                                    "narration": "voiceover or dialogue for this scene",
-                                    "style_notes": "lighting, color, mood, film style"
-                                }
-                            ]
-                        }"""
-                    }
-                ]
-            }
+        while not operation.done:
+            await asyncio.sleep(5)
+            operation = client.operations.get(operation)
+
+        # Get the video URI and download it
+        video_uri = operation.response.generated_videos[0].video.uri
+        print(f"DEBUG video_uri: {video_uri}")
+
+        import httpx
+        async with httpx.AsyncClient(follow_redirects=True) as http_client:
+            download_url = f"{video_uri}&key={os.getenv('GEMINI_API_KEY')}"
+            response = await http_client.get(download_url)
+            video_bytes = response.content
+
+        video_b64 = base64.b64encode(video_bytes).decode()
+        return {"scene_index": index, "video_url": f"data:video/mp4;base64,{video_b64}"}
+
+    except Exception as e:
+        print(f"DEBUG error: {e}")
+        return {"scene_index": index, "video_url": None, "error": str(e)}
+
+async def movie_stream(scenes: list, duration: int):
+    try:
+        tasks = [
+            generate_video_clip(scene, i, duration)
+            for i, scene in enumerate(scenes)
         ]
-    )
 
-    # Parse Gemini response
-    raw = response.text.strip()
-    if raw.startswith("```"):
-        raw = raw.split("```")[1]
-        if raw.startswith("json"):
-            raw = raw[4:]
-    result = json.loads(raw.strip())
+        for coro in asyncio.as_completed(tasks):
+            result = await coro
+            yield make_sse("video_clip", result["scene_index"], result)
+            await asyncio.sleep(0.05)
 
-    # Generate images for all scenes in parallel
-    image_tasks = [
-        generate_image(scene["description"], scene["style_notes"])
-        for scene in result["scenes"]
-    ]
-    image_urls = await asyncio.gather(*image_tasks)
+        yield make_sse("done", None, None)
 
-    # Add image URLs to each scene
-    for i, scene in enumerate(result["scenes"]):
-        scene["image_url"] = image_urls[i]
+    except Exception as e:
+        yield make_sse("error", None, str(e))
 
-    return result
 
-class GenerateRequest(BaseModel):
-    mood: str
-    frame: str = ""  # base64 JPEG, empty string if no camera available
+def extract_tagged_blocks(text: str, tag: str) -> list[str]:
+    pattern = rf"<{tag}>(.*?)</{tag}>"
+    return [m.strip() for m in re.findall(pattern, text, re.DOTALL)]
 
 
 def make_sse(event_type: str, index, content) -> str:
@@ -363,12 +351,6 @@ You decide how many scenes it takes to tell that story honestly.
 Tell it."""
 
 
-def extract_tagged_blocks(text: str, tag: str) -> list[str]:
-    """Extract all occurrences of <tag>...</tag> from text."""
-    pattern = rf"<{tag}>(.*?)</{tag}>"
-    return [m.strip() for m in re.findall(pattern, text, re.DOTALL)]
-
-
 async def generation_stream(mood: str, frame_b64: str):
     try:
         has_image = bool(frame_b64)
@@ -387,7 +369,6 @@ async def generation_stream(mood: str, frame_b64: str):
             parts.append(types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg"))
         parts.append(types.Part(text=user_text))
 
-        # ── Call Gemini with the screenwriter system prompt ─────────────
         response = client.models.generate_content(
             model="gemini-2.5-flash",
             contents=parts,
@@ -400,7 +381,6 @@ async def generation_stream(mood: str, frame_b64: str):
 
         raw = response.text.strip()
 
-        # ── Parse XML-tagged blocks ─────────────────────────────────────
         narrations      = extract_tagged_blocks(raw, "narration")
         characters      = extract_tagged_blocks(raw, "character")
         scene_dirs      = extract_tagged_blocks(raw, "scene_direction")
@@ -410,14 +390,12 @@ async def generation_stream(mood: str, frame_b64: str):
 
         def get(lst, i): return lst[i] if i < len(lst) else ""
 
-        # ── Stream text events immediately ──────────────────────────────
         for i in range(num_scenes):
             yield make_sse("narration",       i, get(narrations,  i))
             yield make_sse("character",       i, get(characters,  i))
             yield make_sse("scene_direction", i, get(scene_dirs,  i))
             await asyncio.sleep(0.05)
 
-        # ── Generate images via Imagen ──────────────────────────────────
         for i in range(num_scenes):
             prompt = get(image_prompts, i)
             if not prompt:
@@ -432,7 +410,7 @@ async def generation_stream(mood: str, frame_b64: str):
                 img_b64 = base64.b64encode(img_bytes_out).decode()
                 yield make_sse("image_url", i, f"data:image/png;base64,{img_b64}")
             except Exception:
-                pass  # panel stays partial — not fatal
+                pass
 
             await asyncio.sleep(0.05)
 
@@ -440,6 +418,19 @@ async def generation_stream(mood: str, frame_b64: str):
 
     except Exception as e:
         yield make_sse("error", None, str(e))
+
+
+class GenerateRequest(BaseModel):
+    mood: str
+    frame: str = ""
+
+
+class MovieRequest(BaseModel):
+    scenes: list
+    duration_seconds: int = 5
+
+    def validated_duration(self) -> int:
+        return max(4, min(8, self.duration_seconds))
 
 
 @app.post("/generate")
@@ -459,3 +450,102 @@ async def generate(req: GenerateRequest):
 async def list_models():
     models = client.models.list()
     return {"models": [m.name for m in models]}
+
+
+@app.post("/edit-scene")
+async def edit_scene(audio: UploadFile = File(...), scene: str = Form(...)):
+    audio_bytes = await audio.read()
+    current_scene = json.loads(scene)
+
+    response = client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=[
+            {
+                "parts": [
+                    {
+                        "inline_data": {
+                            "mime_type": "audio/mp4",
+                            "data": audio_bytes
+                        }
+                    },
+                    {
+                        "text": f"""You are a film director's assistant. The user has an existing storyboard scene and wants to edit it based on their voice instruction.
+
+Current scene:
+Narration: {current_scene.get("narration", "")}
+Character: {current_scene.get("character", "")}
+Scene direction: {current_scene.get("scene_direction", "")}
+Image prompt: {current_scene.get("image_prompt", "")}
+
+Listen to the user's voice instruction and update the scene accordingly.
+Keep any parts of the scene the user didn't mention unchanged.
+
+Respond ONLY with XML blocks in this exact format, no extra text, no markdown:
+
+<narration>
+Present tense. Specific nouns. Active verbs. 2-4 sentences.
+</narration>
+
+<character>
+FIRSTNAME, exact age. Exact job title. Physical detail. What hands are doing. What they want right now.
+</character>
+
+<scene_direction>
+INT/EXT. LOCATION — TIME OF DAY.
+Camera: [focal length] [movement].
+Frame: [foreground] / [background] / [what is kept out of frame].
+Sound: [one diegetic sound] [emotional meaning].
+Transition: [cut type] — [why].
+</scene_direction>
+
+<image_prompt>
+Photorealistic cinematic still photograph.
+Lighting: [exact setup].
+Composition: [subject position, leading lines, depth layers].
+Subject: [exact appearance] [exact action] [exact expression].
+Environment: [three background details].
+Color grade: [specific palette].
+Technical: 35mm Kodak Vision3 500T. Anamorphic 2.39:1. Shallow depth of field.
+</image_prompt>"""
+                    }
+                ]
+            }
+        ]
+    )
+
+    raw = response.text.strip()
+
+    updated_scene = {
+        "narration":       next(iter(extract_tagged_blocks(raw, "narration")), ""),
+        "character":       next(iter(extract_tagged_blocks(raw, "character")), ""),
+        "scene_direction": next(iter(extract_tagged_blocks(raw, "scene_direction")), ""),
+        "image_prompt":    next(iter(extract_tagged_blocks(raw, "image_prompt")), ""),
+        "scene_index":     current_scene.get("scene_index", 0)
+    }
+
+    if updated_scene["image_prompt"]:
+        try:
+            img_response = client.models.generate_images(
+                model="imagen-4.0-generate-001",
+                prompt=updated_scene["image_prompt"],
+                config={"number_of_images": 1, "aspect_ratio": "16:9"},
+            )
+            img_bytes = img_response.generated_images[0].image.image_bytes
+            updated_scene["image_url"] = f"data:image/png;base64,{base64.b64encode(img_bytes).decode()}"
+        except Exception:
+            updated_scene["image_url"] = current_scene.get("image_url", "")
+
+    return updated_scene
+
+
+@app.post("/generate-movie")
+async def generate_movie(req: MovieRequest):
+    return StreamingResponse(
+        movie_stream(req.scenes, req.validated_duration()),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
