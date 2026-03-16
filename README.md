@@ -2,7 +2,7 @@
 
 > **Point your camera. Speak a mood. Watch your surroundings become cinema.**
 
-Scene One transforms any physical space into a fully-realized 8-scene short film — complete with cinematic storyboard frames, narration, director's notes, and a Veo-generated animatic — in under 30 seconds.
+Scene One transforms any physical space into a fully-realized complete short film — complete with cinematic storyboard frames, narration, director's notes, and a Veo-generated animatic.
 
 ---
 
@@ -10,7 +10,7 @@ Scene One transforms any physical space into a fully-realized 8-scene short film
 
 1. **Frame your location** — the live camera captures your environment (desk, living room, street corner)
 2. **Set the mood** — type or speak a genre ("noir thriller", "romantic drama", "epic fantasy")
-3. **Gemini reads the room** — Gemini 2.5 Flash analyzes the photo and writes an 8-scene short film set in that exact space, complete with a named protagonist, causal scene structure, and cinematic direction
+3. **Gemini reads the room** — Gemini 2.5 Flash analyzes the photo and writes a complete short film set in that exact space, complete with a named protagonist, causal scene structure, and cinematic direction
 4. **Imagen renders it** — Imagen 4.0 Fast generates photorealistic 16:9 film stills for every scene in parallel (~20s total)
 5. **Watch the film** — Veo 3.0 generates video clips for each scene, assembled into a playable animatic
 6. **Edit by voice** — record a voice note on any scene panel to revise it ("make the lighting darker", "add rain")
@@ -29,6 +29,7 @@ Scene One transforms any physical space into a fully-realized 8-scene short film
 | Voice scene editing | Gemini 2.5 Flash (audio + structured output) |
 | Real-time SSE streaming | FastAPI `StreamingResponse` |
 | State management | Zustand |
+| Cinematic animatic player | Frontend Ken Burns · CSS subtitles · letterbox |
 
 ---
 
@@ -75,6 +76,8 @@ Scene One transforms any physical space into a fully-realized 8-scene short film
                                                   │  - Animatic film   │
                                                   └────────────────────┘
 ```
+
+See `architecture.png` in the repo root for the full system diagram.
 
 ---
 
@@ -173,6 +176,8 @@ Frontend runs at `http://localhost:3000`.
 
 **Gemini understands ambient audio remarkably well.** The transcription endpoint passes raw WebM audio directly to Gemini 2.5 Flash with a single instruction. It handles accents, background noise, and partial sentences without any preprocessing — no Whisper, no audio chunking, no VAD.
 
+**Removing scene count limits unlocked narrative coherence.** Initially we constrained Gemini to exactly 6 scenes. The output felt like a slideshow — each scene independent, no causal chain. Removing the fixed count and instead giving Gemini a dramatic arc (hook, wound, turn, cost, resolution, echo) with a minimum of 8 and maximum of 14 scenes produced outputs that felt authored. The model naturally generates fewer scenes for simple concepts and expands for complex ones — the constraint was fighting the storytelling.
+
 ---
 
 ## Google Cloud Deployment
@@ -183,6 +188,8 @@ The backend is deployed on **Google Cloud Run**. See [`main.py`](main.py) for AP
 - `veo-3.0-fast-generate-001` (Veo API)
 
 All via the `google-genai` Python SDK.
+
+Proof of deployment: a screen recording of the Cloud Run service running is included in the submission. The backend URL and service logs are visible in the recording.
 
 ---
 
