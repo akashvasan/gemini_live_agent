@@ -44,8 +44,14 @@ export function StoryboardPanel({
     >
       {/* ── Image area ─────────────────────────────────── */}
       <div className="relative w-full aspect-video bg-[#111] overflow-hidden">
-        {/* Skeleton shimmer */}
-        {!panel.imageUrl && <div className="absolute inset-0 shimmer-bg" />}
+        {/* Skeleton shimmer — only while still generating */}
+        {!panel.imageUrl && !showWatchFilm && <div className="absolute inset-0 shimmer-bg" />}
+        {/* No-image placeholder when generation is done */}
+        {!panel.imageUrl && showWatchFilm && (
+          <div className="absolute inset-0 flex items-center justify-center bg-[#0d0d0d]">
+            <span className="text-[#2a2a2a] text-xs tracking-widest uppercase">No image</span>
+          </div>
+        )}
 
         {/* Image with clip-path wipe reveal */}
         {panel.imageUrl && (
@@ -148,7 +154,9 @@ export function StoryboardPanel({
               <span className="text-[11px] text-[#a09880]">Generating...</span>
             )}
             {panel.status === "partial" && !panel.imageUrl && (
-              <span className="text-[11px] text-[#a09880]">Rendering image...</span>
+              <span className="text-[11px] text-[#a09880]">
+                {showWatchFilm ? "Image quota exceeded" : "Rendering image..."}
+              </span>
             )}
             {panel.status === "complete" && (
               <span className="text-[11px] text-green-500/60">✓ Ready</span>

@@ -3,7 +3,7 @@
 import React, { useRef, useEffect, useState, useCallback } from "react";
 import { RecordButton } from "./RecordButton";
 
-type RecordState = "idle" | "recording" | "processing";
+type RecordState = "idle" | "recording" | "processing" | "error";
 
 interface VoiceCaptureProps {
   onTranscript: (text: string) => void;
@@ -17,8 +17,9 @@ export function VoiceCapture({ onTranscript }: VoiceCaptureProps) {
   const animFrameRef = useRef<number>(0);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const idleTimeRef = useRef<number>(0);
 
-  // Waveform drawing loop
+  // Waveform drawing loop — reacts to live mic input
   const drawWaveform = useCallback(() => {
     const canvas = canvasRef.current;
     const analyser = analyserRef.current;
@@ -45,10 +46,9 @@ export function VoiceCapture({ onTranscript }: VoiceCaptureProps) {
       const x = i * (barWidth + gap) + gap / 2;
       const y = (height - barH) / 2;
 
-      // Gradient: gold to orange
       const grad = ctx.createLinearGradient(x, y, x, y + barH);
-      grad.addColorStop(0, `rgba(232, 197, 71, ${0.4 + value * 0.6})`);
-      grad.addColorStop(1, `rgba(255, 140, 50, ${0.2 + value * 0.5})`);
+      grad.addColorStop(0, `rgba(232, 197, 71, ${0.5 + value * 0.5})`);
+      grad.addColorStop(1, `rgba(255, 140, 50, ${0.3 + value * 0.5})`);
 
       ctx.fillStyle = grad;
       ctx.beginPath();
@@ -59,8 +59,8 @@ export function VoiceCapture({ onTranscript }: VoiceCaptureProps) {
     animFrameRef.current = requestAnimationFrame(drawWaveform);
   }, []);
 
-  // Idle waveform — flat ambient bars
-  const drawIdle = useCallback(() => {
+  // Idle animation — gentle breathing pulse on the bars
+  const drawIdleFrame = useCallback((timestamp: number) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
@@ -72,21 +72,35 @@ export function VoiceCapture({ onTranscript }: VoiceCaptureProps) {
     const barCount = 48;
     const barWidth = (width / barCount) * 0.6;
     const gap = (width / barCount) * 0.4;
+    const t = timestamp / 1000;
 
     for (let i = 0; i < barCount; i++) {
+      // Each bar breathes at a slightly different phase
+      const phase = (i / barCount) * Math.PI * 2;
+      const breath = 0.5 + 0.5 * Math.sin(t * 1.2 + phase);
+      const barH = 3 + breath * 10;
       const x = i * (barWidth + gap) + gap / 2;
-      const barH = 4;
       const y = (height - barH) / 2;
-      ctx.fillStyle = "rgba(58,58,58,0.8)";
+
+      const alpha = 0.15 + breath * 0.25;
+      ctx.fillStyle = `rgba(232, 197, 71, ${alpha})`;
       ctx.beginPath();
       ctx.roundRect(x, y, barWidth, barH, 2);
       ctx.fill();
     }
+
+    animFrameRef.current = requestAnimationFrame(drawIdleFrame);
   }, []);
 
+  const startIdleAnimation = useCallback(() => {
+    cancelAnimationFrame(animFrameRef.current);
+    animFrameRef.current = requestAnimationFrame(drawIdleFrame);
+  }, [drawIdleFrame]);
+
   useEffect(() => {
-    drawIdle();
-  }, [drawIdle]);
+    startIdleAnimation();
+    return () => cancelAnimationFrame(animFrameRef.current);
+  }, [startIdleAnimation]);
 
   const startRecording = useCallback(async () => {
     try {
@@ -110,31 +124,47 @@ export function VoiceCapture({ onTranscript }: VoiceCaptureProps) {
 
       recorder.onstop = async () => {
         setRecordState("processing");
-        // eslint-disable-next-line @typescript-eslint/no-unused-vars
-        const audioBlob = new Blob(chunksRef.current, { type: "audio/webm" });
+        const mimeType = recorder.mimeType || "audio/webm";
+        const audioBlob = new Blob(chunksRef.current, { type: mimeType });
 
-        // TODO: send blob to backend for transcription
-        // For now, use a hardcoded transcript
-        await new Promise((r) => setTimeout(r, 800)); // simulate processing
-        const hardcodedTranscript =
-          "A luxury car racing through winding coastal roads at golden hour, cinematic and dramatic";
-        onTranscript(hardcodedTranscript);
-        setRecordState("idle");
+        try {
+          const formData = new FormData();
+          formData.append("audio", audioBlob, "recording.webm");
 
+          const response = await fetch("/api/transcribe", {
+            method: "POST",
+            body: formData,
+          });
+
+          if (response.ok) {
+            const { transcript } = await response.json();
+            if (transcript) onTranscript(transcript);
+            setRecordState("idle");
+          } else {
+            console.error("Transcribe failed:", response.status);
+            setRecordState("error");
+            setTimeout(() => setRecordState("idle"), 2500);
+          }
+        } catch (err) {
+          console.error("Transcribe error:", err);
+          setRecordState("error");
+          setTimeout(() => setRecordState("idle"), 2500);
+        }
         stream.getTracks().forEach((t) => t.stop());
         cancelAnimationFrame(animFrameRef.current);
         analyserRef.current = null;
-        drawIdle();
+        startIdleAnimation();
       };
 
       recorder.start();
       setRecordState("recording");
+      cancelAnimationFrame(animFrameRef.current);
       drawWaveform();
     } catch {
       console.error("Microphone access denied");
       setRecordState("idle");
     }
-  }, [drawWaveform, drawIdle, onTranscript]);
+  }, [drawWaveform, startIdleAnimation, onTranscript]);
 
   const stopRecording = useCallback(() => {
     mediaRecorderRef.current?.stop();

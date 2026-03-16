@@ -79,7 +79,7 @@ export function StoryboardGrid() {
           </div>
         )}
 
-        {isComplete && (
+        {panels.length > 0 && !isGenerating && (
           <button
             onClick={() => openAnimatic(0)}
             className="flex items-center gap-2 px-4 py-2 rounded-lg bg-[#e8c547] text-[#0a0a0a] text-sm font-bold tracking-widest uppercase hover:bg-yellow-400 hover:scale-[1.02] transition-all duration-200 shadow-lg shadow-[#e8c547]/20"

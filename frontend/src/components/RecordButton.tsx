@@ -2,7 +2,7 @@
 
 import React from "react";
 
-type RecordState = "idle" | "recording" | "processing";
+type RecordState = "idle" | "recording" | "processing" | "error";
 
 interface RecordButtonProps {
   state: RecordState;
@@ -14,7 +14,7 @@ export function RecordButton({ state, onClick }: RecordButtonProps) {
     <div className="flex flex-col items-center gap-3">
       <button
         onClick={onClick}
-        disabled={state === "processing"}
+        disabled={state === "processing" || state === "error"}
         className="relative flex items-center justify-center focus:outline-none disabled:cursor-not-allowed"
         aria-label={
           state === "idle"
@@ -49,6 +49,8 @@ export function RecordButton({ state, onClick }: RecordButtonProps) {
               ? "bg-film-accent hover:bg-yellow-400 shadow-lg shadow-film-accent/30 hover:scale-105"
               : state === "recording"
               ? "bg-film-red shadow-lg shadow-red-500/40"
+              : state === "error"
+              ? "bg-red-800"
               : "bg-film-muted",
           ].join(" ")}
         >
@@ -76,6 +78,13 @@ export function RecordButton({ state, onClick }: RecordButtonProps) {
               style={{ animation: "spin 0.8s linear infinite" }}
             />
           )}
+
+          {state === "error" && (
+            /* X icon */
+            <svg xmlns="http://www.w3.org/2000/svg" className="w-6 h-6 text-white" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
+            </svg>
+          )}
         </span>
       </button>
 
@@ -86,6 +95,7 @@ export function RecordButton({ state, onClick }: RecordButtonProps) {
           <span className="text-film-red">Recording — click to stop</span>
         )}
         {state === "processing" && "Processing..."}
+        {state === "error" && <span className="text-red-400">Transcription failed</span>}
       </span>
     </div>
   );

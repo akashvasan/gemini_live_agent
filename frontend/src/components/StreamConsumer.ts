@@ -64,6 +64,8 @@ export function startGeneration(mood: string, frameBase64: string): void {
           }
         }
       }
+      // Stream ended without a done event — mark generation complete
+      setGenerating(false);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Stream connection failed");
     }
